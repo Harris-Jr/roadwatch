@@ -1,0 +1,231 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-cream: var(--cream);
+  --color-ink: var(--ink);
+  --color-peach: var(--peach);
+  --color-teal: var(--teal);
+  --color-coral: var(--coral);
+  --color-mustard: var(--mustard);
+  --color-severity-minor: var(--severity-minor);
+  --color-severity-moderate: var(--severity-moderate);
+  --color-severity-severe: var(--severity-severe);
+  --color-status-reported: var(--status-reported);
+  --color-status-progress: var(--status-progress);
+  --color-status-fixed: var(--status-fixed);
+  --color-sync-queued: var(--sync-queued);
+  --color-sync-syncing: var(--sync-syncing);
+  --color-sync-uploaded: var(--sync-uploaded);
+  --color-sync-failed: var(--sync-failed);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --font-display: "Poppins", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  --radius: 0.75rem;
+
+  /* Warm cream + deep ink base */
+  --background: #FBF6EE;
+  --foreground: #16221E;
+  --card: #FFFFFF;
+  --card-foreground: #16221E;
+  --popover: #FFFFFF;
+  --popover-foreground: #16221E;
+
+  /* Deep forest green primary */
+  --primary: #1B3D33;
+  --primary-foreground: #FBF6EE;
+
+  /* Peach secondary */
+  --secondary: #F3DFC4;
+  --secondary-foreground: #16221E;
+
+  /* Teal accent (was orange) */
+  --accent: #4FB8AC;
+  --accent-foreground: #0B1F1B;
+
+  --muted: #F1EADD;
+  --muted-foreground: #5C544A;
+
+  --destructive: oklch(0.55 0.22 27);
+  --destructive-foreground: #ffffff;
+
+  --border: #EADFCE;
+  --input: #EADFCE;
+  --ring: #1B3D33;
+
+  /* Named palette */
+  --cream: #FBF6EE;
+  --ink: #16221E;
+  --peach: #F3DFC4;
+  --teal: #4FB8AC;
+  --coral: #F2A6A0;
+  --mustard: #E8B84B;
+
+  /* Severity — DO NOT CHANGE, carry real meaning */
+  --severity-minor: oklch(0.75 0.14 90);
+  --severity-moderate: oklch(0.68 0.17 55);
+  --severity-severe: oklch(0.55 0.22 27);
+
+  /* Status — DO NOT CHANGE */
+  --status-reported: oklch(0.55 0.15 250);
+  --status-progress: oklch(0.68 0.17 55);
+  --status-fixed: oklch(0.5 0.13 155);
+
+  /* Sync */
+  --sync-queued: oklch(0.6 0.03 240);
+  --sync-syncing: oklch(0.55 0.15 250);
+  --sync-uploaded: oklch(0.5 0.13 155);
+  --sync-failed: oklch(0.55 0.22 27);
+
+  /* Sidebar (admin) — deep forest */
+  --sidebar: #16221E;
+  --sidebar-foreground: #FBF6EE;
+  --sidebar-primary: #1B3D33;
+  --sidebar-primary-foreground: #FBF6EE;
+  --sidebar-accent: #22322C;
+  --sidebar-accent-foreground: #FBF6EE;
+  --sidebar-border: #2B3A34;
+  --sidebar-ring: #4FB8AC;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html {
+    font-family: var(--font-sans);
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-size: 16px;
+    line-height: 1.55;
+  }
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    letter-spacing: -0.015em;
+    color: var(--color-ink);
+  }
+  button, [role="button"], a.btn {
+    min-height: 44px;
+  }
+}
+
+@utility map-bg {
+  background-color: oklch(0.93 0.02 150);
+  background-image:
+    linear-gradient(oklch(0.88 0.02 150) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(0.88 0.02 150) 1px, transparent 1px),
+    radial-gradient(circle at 20% 30%, oklch(0.85 0.05 150) 0%, transparent 40%),
+    radial-gradient(circle at 75% 65%, oklch(0.87 0.04 200) 0%, transparent 45%);
+  background-size: 40px 40px, 40px 40px, 100% 100%, 100% 100%;
+}
+
+@utility pulse-marker {
+  animation: pulse-ring 2s ease-out infinite;
+}
+
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 currentColor; opacity: 0.9; }
+  100% { box-shadow: 0 0 0 14px transparent; opacity: 0; }
+}
+
+@utility rw-input {
+  height: 2.85rem;
+  width: 100%;
+  border-radius: 9999px;
+  border: 1.5px solid var(--color-border);
+  background: var(--color-background);
+  padding-left: 1rem;
+  padding-right: 1rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+.rw-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-primary) 18%, transparent);
+}
+
+/* Pill button primitives */
+@utility btn-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 2.85rem;
+  padding-left: 1.4rem;
+  padding-right: 1.4rem;
+  border-radius: 9999px;
+  font-weight: 700;
+  font-size: 0.9rem;
+  transition: background-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+@utility btn-pill-primary {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  box-shadow: 0 6px 18px -8px color-mix(in oklab, var(--color-primary) 55%, transparent);
+}
+.btn-pill-primary:hover {
+  background: color-mix(in oklab, var(--color-primary) 92%, black);
+}
+@utility btn-pill-secondary {
+  background: var(--color-card);
+  color: var(--color-ink);
+  border: 1.5px solid var(--color-border);
+}
+.btn-pill-secondary:hover {
+  background: var(--color-muted);
+}
+@utility btn-pill-teal {
+  background: var(--color-teal);
+  color: var(--color-ink);
+}
+.btn-pill-teal:hover {
+  background: color-mix(in oklab, var(--color-teal) 88%, black);
+}
+
+/* Soft color-blocked card */
+@utility soft-card {
+  border-radius: 1.75rem;
+  background: var(--color-card);
+  box-shadow: 0 1px 2px rgba(22,34,30,0.04), 0 12px 40px -20px rgba(22,34,30,0.15);
+}

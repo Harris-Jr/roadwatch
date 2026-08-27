@@ -1,0 +1,40 @@
+# --- Environment ---
+.env
+
+# --- Python (backend, ai) ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.db
+backend/uploads/
+ai/ai/model/*.h5
+!ai/ai/model/README.md
+*.egg-info/
+
+# --- Node (frontend) ---
+frontend/node_modules
+frontend/dist
+frontend/dist-ssr
+frontend/.output
+frontend/.vinxi
+frontend/.tanstack/**
+frontend/.nitro
+*.local
+
+# Wrangler / Cloudflare
+frontend/.wrangler/
+frontend/.dev.vars
+
+# --- Editor / OS ---
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+logs
+*.log

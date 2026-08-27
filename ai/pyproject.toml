@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roadwatch-ai"
+version = "0.1.0"
+description = "Pothole classification, video frame extraction, and location resolution for RoadWatch Zambia."
+requires-python = ">=3.11"
+dependencies = [
+    "tensorflow==2.17.0",
+    "opencv-python-headless==4.10.0.84",
+    "pytesseract==0.3.13",
+    "Pillow==10.4.0",
+    "numpy==1.26.4",
+]
+
+[tool.setuptools]
+packages = ["ai"]
