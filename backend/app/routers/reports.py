@@ -8,8 +8,16 @@ from app.deps import require_government
 from app.models import AppSettings, Report, ReportSource, ReportStatus, Severity, User
 from app.schemas import ReportOut, ReportUpdate
 from app.services.geocoding import reverse_geocode_road_name
-from ai.inference import classifier
-from app.services.storage import save_upload
+from ai.inference import ClassificationResult, classifier
+from ai.frames import extract_frames
+from ai.location import resolve_from_ocr
+from app.services.storage import absolute_path, save_pil_image, save_upload
+
+# How much of a Quick Report video clip to actually scan. This is meant to
+# be a short clip filmed on the spot, not a survey recording — capping both
+# the time window and frame count keeps the request fast.
+QUICK_VIDEO_MAX_SECONDS = 8
+QUICK_VIDEO_FRAME_INTERVAL = 0.5
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -59,30 +67,96 @@ def get_report(report_id: int, db: Session = Depends(get_db)):
 
 @router.post("/quick-report", response_model=ReportOut)
 def submit_quick_report(
-    photo: UploadFile = File(...),
-    latitude: float = Form(...),
-    longitude: float = Form(...),
+    photo: UploadFile | None = File(None),
+    video: UploadFile | None = File(None),
+    latitude: float | None = Form(None),
+    longitude: float | None = Form(None),
     severity: Severity | None = Form(None),
     note: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
-    image = Image.open(photo.file)
-    app_settings = _get_or_create_settings(db)
+    if not photo and not video:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Attach a photo or a short video clip.",
+        )
+    if photo and video:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Attach either a photo or a video, not both.",
+        )
 
-    result = classifier.classify(
-        image,
+    app_settings = _get_or_create_settings(db)
+    thresholds = dict(
         minor_threshold=app_settings.minor_threshold,
         moderate_threshold=app_settings.moderate_threshold,
         severe_threshold=app_settings.severe_threshold,
     )
 
+    if photo:
+        representative_image = Image.open(photo.file)
+        result = classifier.classify(representative_image, **thresholds)
+        photo.file.seek(0)
+        saved_path = save_upload(photo, subdir="quick_reports")
+    else:
+        # Video path: save it, sample a handful of frames from the first
+        # few seconds, classify each, and use whichever frame the model was
+        # most confident about as the representative detection — same
+        # classifier, same preprocessing, just applied per-frame instead of
+        # to a single upload.
+        tmp_video_path = save_upload(video, subdir="quick_reports")
+        representative_image: Image.Image | None = None
+        result: ClassificationResult | None = None
+
+        for frame, ts in extract_frames(
+            absolute_path(tmp_video_path), QUICK_VIDEO_FRAME_INTERVAL
+        ):
+            if ts > QUICK_VIDEO_MAX_SECONDS:
+                break
+            frame_result = classifier.classify(frame, **thresholds)
+            if frame_result.is_pothole and (
+                result is None or frame_result.confidence > result.confidence
+            ):
+                result = frame_result
+                representative_image = frame
+
+        if result is None:
+            # No frame was classified as a pothole. Keep going only if the
+            # submitter set a severity manually — same rule as the photo
+            # path — using the first frame (if any) as the reference image.
+            result = ClassificationResult(is_pothole=False, confidence=0.0, severity=None)
+
+        saved_path = (
+            save_pil_image(representative_image, subdir="quick_reports")
+            if representative_image
+            else tmp_video_path
+        )
+
     if not result.is_pothole and severity is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                "Couldn't confirm a pothole in this photo. Try a clearer, "
-                "closer photo, or set a severity manually to submit anyway "
-                "for review."
+                "Couldn't confirm a pothole. Try a clearer photo or video, "
+                "or set a severity manually to submit anyway for review."
+            ),
+        )
+
+    # Location: prefer the coordinates the client sent (real device GPS).
+    # If those weren't provided — geolocation denied/unavailable — fall
+    # back to OCR, reading coordinates burned into the image itself (the
+    # same approach your original prototype used for GPS-camera-stamped
+    # photos). Only works if the photo/frame actually has visible GPS text.
+    if (latitude is None or longitude is None) and representative_image is not None:
+        ocr_coords = resolve_from_ocr(representative_image)
+        if ocr_coords:
+            latitude, longitude = ocr_coords
+
+    if latitude is None or longitude is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "No location available. Enable location access, or use a "
+                "photo/video with GPS coordinates visible in the frame."
             ),
         )
 
@@ -91,8 +165,6 @@ def submit_quick_report(
     final_severity = severity or Severity(result.severity)
     confirmed = result.is_pothole  # manual overrides go to the review queue
 
-    photo.file.seek(0)
-    photo_path = save_upload(photo, subdir="quick_reports")
     road_name = reverse_geocode_road_name(latitude, longitude)
 
     report = Report(
@@ -102,7 +174,7 @@ def submit_quick_report(
         status=ReportStatus.reported,
         source=ReportSource.quick_report,
         location=ST_SetSRID(ST_MakePoint(longitude, latitude), 4326),
-        photo_url=photo_path,
+        photo_url=saved_path,
         note=note,
         confirmed=confirmed,
     )

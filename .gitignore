@@ -8,6 +8,7 @@ __pycache__/
 venv/
 *.db
 backend/uploads/
+osrm-data/
 ai/ai/model/*.h5
 !ai/ai/model/README.md
 *.egg-info/

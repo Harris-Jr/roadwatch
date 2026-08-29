@@ -32,5 +32,16 @@ def save_upload(file: UploadFile, subdir: str) -> str:
     return os.path.join(subdir, filename)
 
 
+def save_pil_image(image, subdir: str) -> str:
+    """Saves an in-memory PIL image (e.g. the best frame picked out of a
+    Quick Report video) as a JPEG, returning a path relative to
+    UPLOAD_DIR — same convention as save_upload."""
+    directory = _ensure_dir(subdir)
+    filename = f"{uuid.uuid4().hex}.jpg"
+    full_path = os.path.join(directory, filename)
+    image.convert("RGB").save(full_path, "JPEG", quality=85)
+    return os.path.join(subdir, filename)
+
+
 def absolute_path(relative_path: str) -> str:
     return os.path.join(settings.upload_dir, relative_path)

@@ -104,10 +104,11 @@ guessing or asking the user to pick a portal.
 ### Infrastructure
 | Service | Purpose |
 |---------|---------|
-| PostgreSQL + PostGIS | Database — real spatial queries on report/segment geometry, not just lat/lon floats |
-| Docker Compose | Local dev and VPS deployment — db, api, frontend as one stack |
+| PostgreSQL + PostGIS | Database — real spatial queries on report/segment/route geometry, not just lat/lon floats |
+| OSRM (self-hosted) | Real route computation — actual road-following geometry, distance, duration, and turn-by-turn maneuvers, not estimates |
+| Docker Compose | Local dev and VPS deployment — db, osrm, api, frontend as one stack |
 | Nginx + Let's Encrypt | Reverse proxy and TLS on the VPS (deployment-time addition, not in this repo) |
-| OpenStreetMap Nominatim | Free reverse geocoding for Quick Report road names |
+| OpenStreetMap Nominatim | Free forward and reverse geocoding — destination search and Quick Report road names |
 
 > **Payment gateway:** not yet integrated. Given the userbase, a mobile
 > money gateway (MTN/Airtel Money) is a better fit than card-only
@@ -187,6 +188,32 @@ Single-row table backing the admin Settings page.
 | sms_for_severe_enabled | boolean | Whether severe detections trigger SMS |
 | data_retention_days | integer | How long raw footage is kept (default 90) |
 
+### vehicles
+| Column | Type | Description |
+|--------|------|--------------|
+| id | integer | Primary key |
+| business_id | integer | FK → users (a `business` role account) |
+| name | string | e.g. "Truck 01" |
+| plate_number | string, nullable | |
+| created_at | timestamp | |
+
+Real, admin-entered records — not a telematics/live-GPS-tracking
+integration. That's a materially larger, separate system.
+
+### corridors
+| Column | Type | Description |
+|--------|------|--------------|
+| id | integer | Primary key |
+| business_id | integer | FK → users |
+| name | string | e.g. "Lusaka CBD → Kafue Road" |
+| start_lat / start_lon | float | Corridor start point |
+| end_lat / end_lon | float | Corridor end point |
+| created_at | timestamp | |
+
+Risk for a corridor is computed live against the real routing engine and
+real `reports` table — nothing about "risk" is stored here, only the two
+endpoints a business wants tracked.
+
 ---
 
 ## API Endpoints
@@ -200,6 +227,8 @@ Single-row table backing the admin Settings page.
 | `uploads` | `POST /uploads/video`, `GET /uploads/jobs`, `GET /uploads/jobs/{id}/detections` | Video processing runs as a FastAPI background task |
 | `dashboard` | `GET /dashboard/summary` | Powers the admin Dashboard's stat cards and chart |
 | `settings` | `GET /settings`, `PATCH /settings` | Read is public (thresholds are not sensitive); write requires `government` role |
+| `routing` | `GET /routing/search`, `POST /routing/routes` | Real destination search (Nominatim) and real route options (OSRM + live hazard scoring) |
+| `business` | `GET/POST /business/vehicles`, `DELETE /business/vehicles/{id}`, `GET/POST /business/corridors`, `DELETE /business/corridors/{id}`, `GET /business/corridors/{id}/risk`, `GET /business/summary` | `business` role only |
 
 Full interactive docs at `/docs` once the API is running.
 
@@ -209,10 +238,22 @@ Full interactive docs at `/docs` once the API is running.
 
 ### Quick Report Flow
 1. Motorist taps **Report a pothole** on the public map
-2. Captures a photo (camera or gallery) and picks a severity (optional)
-3. Browser's Geolocation API supplies real coordinates — no manual pin unless it fails
-4. Backend runs the CNN classifier on the photo; if confident, severity comes from the confidence-threshold bucket; if the submitter set severity manually, that's trusted over the model
-5. Report is reverse-geocoded (OpenStreetMap Nominatim) for a road name and saved — auto-confirmed if the model was confident, otherwise queued for admin review
+2. Captures a **photo or a short video clip** (video: the first 8 seconds are sampled and classified frame-by-frame; the highest-confidence frame becomes the report's representative image) and picks a severity (optional)
+3. Browser's Geolocation API supplies real coordinates. If that's unavailable or denied, the backend falls back to **OCR**, reading GPS coordinates burned into the photo/frame itself (for photos taken with a GPS-camera app) — only if neither resolves does submission get rejected
+4. Backend runs the CNN classifier; severity comes from the confidence-threshold bucket, or from the submitter's manual choice if they set one
+5. Report is reverse-geocoded (OpenStreetMap Nominatim) and saved — auto-confirmed if the model was confident, otherwise queued for admin review
+
+### Real Routing Flow (Navigate)
+1. Person searches a destination — real results from OpenStreetMap Nominatim, biased to Zambia, not a hardcoded list
+2. Backend requests real route alternatives from a self-hosted **OSRM** instance (actual road-following geometry, distance, duration, turn-by-turn maneuvers)
+3. Each alternative is scored by a **real PostGIS query** — confirmed severe/moderate/minor reports within 60m of that route's actual geometry — and labeled Safest / Balanced / Fastest based on that real score, not fixed numbers
+4. During active navigation, the browser's live GPS (`watchPosition`) tracks real position on the map alongside the real route line; the "next" instruction is whichever real maneuver step is currently closest ahead, generated from OSRM's actual maneuver data
+5. If OSRM isn't reachable (e.g. the Zambia map data hasn't been set up yet), routing falls back to a straight-line estimate — clearly labeled `estimated: true` in the response and shown as such in the UI, never presented as if it were real
+
+### Corridor Risk Flow (Business accounts)
+1. Business account adds a corridor — a named start/end point pair, picked via the same real place search as Navigate
+2. Requesting that corridor's risk reuses the exact same "real route + real hazard score" engine Navigate uses
+3. Risk (Low/Moderate/High) is computed live from the real hazard score every time it's requested — nothing is cached or hardcoded
 
 ### Video Upload & Review Flow
 1. Government staff upload dash-cam/survey footage on **Video Upload & Processing**
@@ -376,12 +417,12 @@ roadwatch-zambia/
 │           └── types.ts         # Shared frontend types
 ├── backend/
 │   └── app/
-│       ├── routers/             # auth, reports, road_segments, users, uploads, dashboard, settings
+│       ├── routers/             # auth, reports, road_segments, users, uploads, dashboard, settings, routing, business
 │       ├── models.py            # SQLAlchemy models
 │       ├── schemas.py           # Pydantic request/response schemas
 │       ├── security.py          # JWT + password hashing
 │       ├── deps.py              # Auth dependencies, role guards
-│       └── services/            # geocoding.py, storage.py (non-ML only)
+│       └── services/            # geocoding.py, storage.py, routing.py (non-ML only)
 ├── ai/
 │   └── ai/
 │       ├── inference.py         # Classifier wrapper — exact training-time preprocessing
@@ -401,6 +442,7 @@ Copy `.env.example` to `.env` at the repo root — one file, read by both
 - [ ] `DATABASE_URL`
 - [ ] `JWT_SECRET` — generate with `openssl rand -hex 32`, don't ship the placeholder
 - [ ] `CORS_ORIGINS` — add your real domain before deploying
+- [ ] `OSRM_URL` — defaults to the docker-compose `osrm` service; see [Setting Up Real Routing](#setting-up-real-routing)
 - [ ] `MODEL_INPUT_SIZE` — leave at 224 unless you retrain against a different input size
 - [ ] `VITE_API_URL` — the frontend's view of the backend
 
@@ -414,13 +456,48 @@ Copy `.env.example` to `.env` at the repo root — one file, read by both
 
 ---
 
+## Setting Up Real Routing
+
+Navigate and corridor risk both need a self-hosted OSRM instance with
+actual Zambia road data. This is a one-time setup, and it has to happen on
+your machine or VPS — **downloading real OpenStreetMap data isn't
+possible from within an AI sandbox**, so this section is written from
+OSRM's documented workflow, not verified end-to-end against live Zambia
+data. If a step behaves differently than described, check
+[OSRM's own docs](https://github.com/Project-OSRM/osrm-backend) against
+whatever version the `osrm/osrm-backend` image pulls.
+
+```bash
+mkdir -p osrm-data && cd osrm-data
+
+# Zambia extract from Geofabrik (~50-100MB)
+curl -O https://download.geofabrik.de/africa/zambia-latest.osm.pbf
+
+# One-time preprocessing — extract, partition, customize (MLD algorithm)
+docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-extract -p /opt/car.lua /data/zambia-latest.osm.pbf
+docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-partition /data/zambia-latest.osrm
+docker run -t -v "${PWD}:/data" osrm/osrm-backend osrm-customize /data/zambia-latest.osrm
+
+cd ..
+docker compose up -d osrm
+```
+
+Until this is done, `osrm` will fail to start (it has no data to serve) —
+that's expected, and the rest of the app keeps working: `routing.py`
+detects OSRM is unreachable and falls back to straight-line estimates,
+clearly flagged as `estimated: true` end to end, frontend included.
+
+Verify it's working: `curl http://localhost:5000/route/v1/driving/28.28,-15.41;28.19,-15.50` should return a real route, not an error.
+
 ## Known Limitations
 
 - **Quick Report is anonymous** — no `reported_by` link between a report and a logged-in individual account yet, so the driver dashboard shows recent public activity rather than a true per-user filter
-- **Route planning is simulated** — no routing engine (OSRM / GraphHopper / Valhalla) is wired up; the map background is real, the route ETAs/hazard counts are not
-- **Business fleet analytics has no data model** — corridor risk and vehicle counts are UI-only, clearly marked in code
+- **OSRM needs a one-time real-data setup** (above) before routing/corridor-risk return real routes instead of straight-line estimates — this can't be pre-verified in a sandboxed environment, only wired correctly per OSRM's documented API
+- **Turn-by-turn is maneuver-based, not voice-guided** — real instructions derived from OSRM's actual maneuver data, shown as text tied to live GPS proximity, but there's no spoken audio guidance or automatic rerouting if you go off-route
+- **No live vehicle/GPS fleet tracking** — `vehicles` are real registered records (name, plate), not telematics hardware integration; "active" isn't a tracked live state
 - **No marker clustering** — fine at seed-data volume, will need `react-leaflet-cluster` or similar once report volume grows
 - **Tile provider is dev-only** — `tile.openstreetmap.org` is not licensed for production traffic; switch to CARTO, MapTiler, or Stadia Maps before real deployment
+- **Nominatim rate limits** — the free tier caps at 1 request/second; destination search and corridor-endpoint search both hit it directly. Fine for testing, worth revisiting (self-hosted Nominatim, or a paid geocoder) before real traffic.
 
 ---
 
@@ -442,11 +519,12 @@ in `.env` to your real domain before building.
 ## Roadmap
 
 - **Mobile money integration** — MTN/Airtel Money for Individual Premium and Business subscriptions
-- **Real routing engine** — self-hosted OSRM/GraphHopper/Valhalla with pothole-severity-weighted edge costs
+- **Voice-guided turn-by-turn + auto-reroute** — current navigation shows real text instructions tied to live position; spoken guidance and automatic rerouting on a missed turn are the next step up
 - **Report-to-account linking** — so Individual accounts can see their actual submission history
-- **Fleet/corridor data model** — vehicles and saved corridors for the Business tier
+- **Single-image bulk import for admin** — a dedicated tool for staff to bulk-upload already GPS-stamped photos (e.g. from a GPS camera app), beyond Quick Report's per-submission OCR fallback
 - **Marker clustering** — for map legibility at production report volumes
 - **Dedicated severity classifier** — replacing confidence-threshold bucketing, if/when a labeled severity dataset exists
+- **Self-hosted Nominatim or a paid geocoder** — once traffic outgrows the free 1 req/sec public instance
 
 ---
 

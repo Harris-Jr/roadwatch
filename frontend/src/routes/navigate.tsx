@@ -1,19 +1,21 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Circle,
   Compass,
+  Loader2,
   MapPin,
   Navigation,
   Shield,
   X,
 } from "lucide-react";
 import { LeafletMap } from "@/components/roadwatch/leaflet-map";
-import { useQuery } from "@tanstack/react-query";
-import { getReports } from "@/lib/api";
+import { getRouteOptions, searchPlaces } from "@/lib/api";
+import type { PlaceResult, RouteOption } from "@/lib/types";
 
 export const Route = createFileRoute("/navigate")({
   head: () => ({
@@ -26,34 +28,56 @@ export const Route = createFileRoute("/navigate")({
 });
 
 type Step = 1 | 2 | 3;
+type LatLng = { lat: number; lng: number };
 
-type Option = {
-  id: string;
-  label: string;
-  eta: string;
-  distance: string;
-  hazards: number;
-  risk: "low" | "medium" | "high";
-  tag?: string;
-};
-
-// Route ETAs, distances, and hazard counts below are simulated — there's no
-// routing engine (OSRM/GraphHopper/Valhalla) wired up yet to compute real
-// pothole-aware routes. The map background now shows real report data; the
-// route options themselves are still illustrative.
-const OPTIONS: Option[] = [
-  { id: "safe", label: "Safest", eta: "24 min", distance: "9.4 km", hazards: 2, risk: "low", tag: "Fewest potholes" },
-  { id: "balanced", label: "Balanced", eta: "19 min", distance: "8.1 km", hazards: 5, risk: "medium", tag: "Recommended" },
-  { id: "fast", label: "Fastest", eta: "16 min", distance: "7.6 km", hazards: 9, risk: "high" },
-];
-
-const SAMPLES = ["Cairo Road", "Great East Road", "Kafue Road", "Independence Avenue", "Lumumba Road"];
+function haversineKm(a: LatLng, b: LatLng) {
+  const R = 6371;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const p1 = (a.lat * Math.PI) / 180;
+  const p2 = (b.lat * Math.PI) / 180;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
 
 function NavigateFlow() {
   const [step, setStep] = useState<Step>(1);
-  const [from, setFrom] = useState("Current location");
-  const [to, setTo] = useState("");
-  const [pick, setPick] = useState<Option["id"]>("balanced");
+  const [fromCoords, setFromCoords] = useState<LatLng | null>(null);
+  const [fromLabel, setFromLabel] = useState("Locating you…");
+  const [locError, setLocError] = useState<string | null>(null);
+  const [destination, setDestination] = useState<PlaceResult | null>(null);
+  const [routes, setRoutes] = useState<RouteOption[]>([]);
+  const [pickIndex, setPickIndex] = useState(0);
+
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setLocError("This browser doesn't support location.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setFromCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setFromLabel("Current location");
+      },
+      () => setLocError("Couldn't get your location — enable location access to plan a route."),
+      { enableHighAccuracy: true, timeout: 8000 },
+    );
+  }, []);
+
+  const routeMutation = useMutation({
+    mutationFn: () =>
+      getRouteOptions({
+        fromLat: fromCoords!.lat,
+        fromLon: fromCoords!.lng,
+        toLat: destination!.latitude,
+        toLon: destination!.longitude,
+      }),
+    onSuccess: (data) => {
+      setRoutes(data);
+      setPickIndex(0);
+      setStep(2);
+    },
+  });
 
   return (
     <div className="min-h-screen bg-background">
@@ -66,36 +90,83 @@ function NavigateFlow() {
       </header>
 
       {step === 1 && (
-        <SearchStep from={from} setFrom={setFrom} to={to} setTo={setTo} onNext={() => to.trim() && setStep(2)} />
+        <SearchStep
+          fromLabel={fromLabel}
+          locError={locError}
+          destination={destination}
+          setDestination={setDestination}
+          onNext={() => fromCoords && destination && routeMutation.mutate()}
+          loading={routeMutation.isPending}
+          error={routeMutation.isError ? "Couldn't compute a route. Try again." : null}
+          canGo={!!fromCoords && !!destination}
+        />
       )}
       {step === 2 && (
         <RouteStep
-          from={from}
-          to={to}
-          pick={pick}
-          setPick={setPick}
+          fromLabel={fromLabel}
+          destinationLabel={destination?.label ?? ""}
+          routes={routes}
+          pickIndex={pickIndex}
+          setPickIndex={setPickIndex}
           onBack={() => setStep(1)}
           onStart={() => setStep(3)}
         />
       )}
-      {step === 3 && <ActiveNavStep to={to} pick={pick} onEnd={() => setStep(1)} />}
+      {step === 3 && fromCoords && destination && (
+        <ActiveNavStep
+          route={routes[pickIndex]}
+          destination={destination}
+          onEnd={() => setStep(1)}
+        />
+      )}
     </div>
   );
 }
 
 function SearchStep({
-  from,
-  setFrom,
-  to,
-  setTo,
+  fromLabel,
+  locError,
+  destination,
+  setDestination,
   onNext,
+  loading,
+  error,
+  canGo,
 }: {
-  from: string;
-  setFrom: (v: string) => void;
-  to: string;
-  setTo: (v: string) => void;
+  fromLabel: string;
+  locError: string | null;
+  destination: PlaceResult | null;
+  setDestination: (p: PlaceResult | null) => void;
   onNext: () => void;
+  loading: boolean;
+  error: string | null;
+  canGo: boolean;
 }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<PlaceResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (query.trim().length < 2) {
+      setResults([]);
+      return;
+    }
+    setSearching(true);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const found = await searchPlaces(query);
+        setResults(found);
+      } finally {
+        setSearching(false);
+      }
+    }, 350);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query]);
+
   return (
     <div className="mx-auto max-w-lg space-y-4 px-4 py-6">
       <div className="soft-card p-4">
@@ -105,45 +176,67 @@ function SearchStep({
 
         <div className="space-y-2">
           <FieldRow icon={<Circle className="h-4 w-4 fill-primary text-primary" />} label="From">
-            <input
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              className="w-full bg-transparent text-sm font-semibold text-ink outline-none"
-            />
+            <span className="block text-sm font-semibold text-ink">{fromLabel}</span>
+            {locError && <span className="text-xs text-destructive">{locError}</span>}
           </FieldRow>
           <FieldRow icon={<MapPin className="h-4 w-4 text-accent" />} label="To">
             <input
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              placeholder="Search a road or destination"
+              value={destination ? destination.label : query}
+              onChange={(e) => {
+                setDestination(null);
+                setQuery(e.target.value);
+              }}
+              placeholder="Search a road or destination in Zambia"
               className="w-full bg-transparent text-sm font-semibold text-ink outline-none placeholder:text-ink/40"
             />
           </FieldRow>
         </div>
       </div>
 
-      <div>
-        <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-ink/60">Suggestions</div>
-        <div className="flex flex-wrap gap-2">
-          {SAMPLES.map((s) => (
+      {!destination && query.trim().length >= 2 && (
+        <div className="soft-card divide-y divide-border/60 overflow-hidden">
+          {searching && (
+            <div className="flex items-center gap-2 p-3 text-xs text-ink/60">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Searching…
+            </div>
+          )}
+          {!searching && results.length === 0 && (
+            <div className="p-3 text-xs text-ink/60">No matches — try a different search.</div>
+          )}
+          {results.map((r, i) => (
             <button
-              key={s}
-              onClick={() => setTo(s)}
-              className="rounded-full bg-muted px-4 py-2 text-xs font-semibold text-ink hover:bg-peach"
+              key={i}
+              onClick={() => {
+                setDestination(r);
+                setQuery("");
+                setResults([]);
+              }}
+              className="flex w-full items-start gap-2 p-3 text-left text-sm hover:bg-muted"
               style={{ minHeight: 0 }}
             >
-              {s}
+              <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+              <span className="text-ink">{r.label}</span>
             </button>
           ))}
         </div>
-      </div>
+      )}
+
+      {error && <div className="rounded-2xl bg-destructive/10 p-3 text-xs text-destructive">{error}</div>}
 
       <button
         onClick={onNext}
-        disabled={!to.trim()}
+        disabled={!canGo || loading}
         className="btn-pill btn-pill-primary mt-4 inline-flex w-full items-center justify-center gap-2 text-base disabled:opacity-50"
       >
-        Find routes <ArrowRight className="h-4 w-4" />
+        {loading ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin" /> Computing routes…
+          </>
+        ) : (
+          <>
+            Find routes <ArrowRight className="h-4 w-4" />
+          </>
+        )}
       </button>
     </div>
   );
@@ -162,48 +255,56 @@ function FieldRow({ icon, label, children }: { icon: React.ReactNode; label: str
 }
 
 function RouteStep({
-  from,
-  to,
-  pick,
-  setPick,
+  fromLabel,
+  destinationLabel,
+  routes,
+  pickIndex,
+  setPickIndex,
   onBack,
   onStart,
 }: {
-  from: string;
-  to: string;
-  pick: string;
-  setPick: (v: string) => void;
+  fromLabel: string;
+  destinationLabel: string;
+  routes: RouteOption[];
+  pickIndex: number;
+  setPickIndex: (i: number) => void;
   onBack: () => void;
   onStart: () => void;
 }) {
-  const { data: potholes = [] } = useQuery({
-    queryKey: ["reports", "public"],
-    queryFn: () => getReports({ confirmedOnly: true }),
-  });
+  const picked = routes[pickIndex];
+  const anyEstimated = routes.some((r) => r.estimated);
+
   return (
     <div className="flex min-h-[calc(100vh-57px)] flex-col">
       <div className="relative h-72 shrink-0">
-        <LeafletMap potholes={potholes.slice(0, 10)} className="h-full w-full" />
+        <LeafletMap potholes={[]} routeGeometry={picked?.geometry ?? null} className="h-full w-full" />
         <div className="pointer-events-none absolute inset-x-3 top-3 rounded-2xl bg-card/95 p-3 shadow-md backdrop-blur">
           <div className="flex items-center gap-2 text-xs">
             <Circle className="h-3 w-3 fill-primary text-primary" />
-            <span className="truncate font-semibold text-ink">{from}</span>
+            <span className="truncate font-semibold text-ink">{fromLabel}</span>
           </div>
           <div className="mt-1 flex items-center gap-2 text-xs">
             <MapPin className="h-3 w-3 text-accent" />
-            <span className="truncate font-semibold text-ink">{to}</span>
+            <span className="truncate font-semibold text-ink">{destinationLabel}</span>
           </div>
         </div>
       </div>
 
       <div className="mx-auto w-full max-w-lg flex-1 space-y-3 px-4 pb-24 pt-4">
         <div className="text-[11px] font-bold uppercase tracking-wider text-ink/60">Choose a route</div>
-        {OPTIONS.map((o) => {
-          const active = pick === o.id;
+        {anyEstimated && (
+          <div className="rounded-2xl bg-accent/15 p-3 text-xs text-ink/80">
+            Approximate — the routing engine isn't fully set up yet, so this is a straight-line
+            estimate rather than a real road-following route.
+          </div>
+        )}
+        {routes.map((o, i) => {
+          const active = i === pickIndex;
+          const risk = o.hazards.severe > 0 ? "high" : o.hazards.moderate > 0 ? "medium" : "low";
           return (
             <button
-              key={o.id}
-              onClick={() => setPick(o.id)}
+              key={i}
+              onClick={() => setPickIndex(i)}
               className={`w-full rounded-3xl p-4 text-left transition-colors ${
                 active ? "bg-teal/30 ring-2 ring-primary" : "soft-card hover:bg-peach/40"
               }`}
@@ -213,17 +314,12 @@ function RouteStep({
                 <div>
                   <div className="flex items-center gap-2">
                     <div className="font-display text-lg font-extrabold text-ink">{o.label}</div>
-                    {o.tag && (
-                      <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase text-primary">
-                        {o.tag}
-                      </span>
-                    )}
                   </div>
                   <div className="mt-1 text-xs text-ink/70">
-                    {o.eta} · {o.distance}
+                    {o.durationMin} min · {o.distanceKm} km
                   </div>
                 </div>
-                <RiskBadge risk={o.risk} count={o.hazards} />
+                <RiskBadge risk={risk} count={o.hazards.total} />
               </div>
             </button>
           );
@@ -241,7 +337,8 @@ function RouteStep({
         <button
           type="button"
           onClick={onStart}
-          className="btn-pill btn-pill-primary inline-flex flex-1 items-center justify-center gap-2"
+          disabled={!picked}
+          className="btn-pill btn-pill-primary inline-flex flex-1 items-center justify-center gap-2 disabled:opacity-50"
         >
           <Navigation className="h-4 w-4" /> Start navigation
         </button>
@@ -264,44 +361,87 @@ function RiskBadge({ risk, count }: { risk: "low" | "medium" | "high"; count: nu
   );
 }
 
-function ActiveNavStep({ to, pick, onEnd }: { to: string; pick: string; onEnd: () => void }) {
-  const chosen = OPTIONS.find((o) => o.id === pick)!;
-  const { data: potholes = [] } = useQuery({
-    queryKey: ["reports", "public"],
-    queryFn: () => getReports({ confirmedOnly: true }),
-  });
+function ActiveNavStep({
+  route,
+  destination,
+  onEnd,
+}: {
+  route: RouteOption;
+  destination: PlaceResult;
+  onEnd: () => void;
+}) {
+  const [livePos, setLivePos] = useState<LatLng | null>(null);
+  const watchIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => setLivePos({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 2000 },
+    );
+    return () => {
+      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+    };
+  }, []);
+
+  const remainingKm = useMemo(() => {
+    if (!livePos) return route.distanceKm;
+    return Math.max(0, haversineKm(livePos, { lat: destination.latitude, lng: destination.longitude }));
+  }, [livePos, route.distanceKm, destination]);
+
+  // Real next-turn instruction: the step whose maneuver point is closest
+  // ahead of the driver's live position, based on actual OSRM maneuver
+  // data — not a fixed string.
+  const nextStep = useMemo(() => {
+    if (route.steps.length === 0) return null;
+    if (!livePos) return route.steps[0];
+    let closest = route.steps[0];
+    let closestDist = Infinity;
+    for (const s of route.steps) {
+      const d = haversineKm(livePos, { lat: s.lat, lng: s.lon });
+      if (d < closestDist) {
+        closestDist = d;
+        closest = s;
+      }
+    }
+    return closest;
+  }, [route.steps, livePos]);
 
   return (
     <div className="fixed inset-0 z-50 bg-background">
-      <LeafletMap potholes={potholes.slice(0, 12)} className="absolute inset-0" />
+      <LeafletMap
+        potholes={[]}
+        routeGeometry={route.geometry}
+        livePosition={livePos}
+        className="absolute inset-0"
+      />
 
-      {/* Top: next-turn instruction */}
       <div className="pointer-events-auto absolute inset-x-3 top-3 rounded-3xl bg-primary p-4 text-primary-foreground shadow-2xl">
         <div className="flex items-center gap-3">
           <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-primary-foreground/15">
             <Navigation className="h-6 w-6" />
           </div>
           <div className="min-w-0">
-            <div className="text-xs font-bold uppercase tracking-wider opacity-80">In 300 m</div>
+            <div className="text-xs font-bold uppercase tracking-wider opacity-80">
+              {route.estimated ? "Estimated route" : "Next"}
+            </div>
             <div className="truncate font-display text-lg font-black leading-tight">
-              Turn right onto {to}
+              {nextStep?.instruction ?? "Continue"}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Bottom: ETA, remaining distance, End */}
       <div className="pointer-events-auto absolute inset-x-3 bottom-3 flex items-center gap-3 rounded-3xl bg-card p-3 shadow-2xl">
         <div className="flex-1">
           <div className="text-[10px] font-bold uppercase tracking-wider text-ink/60">
-            ETA · {chosen.label}
+            {route.label} {!livePos && "· waiting for GPS"}
           </div>
           <div className="font-display text-2xl font-black leading-none text-ink">
-            {chosen.eta}
+            {remainingKm.toFixed(1)} km
           </div>
-          <div className="mt-0.5 text-xs font-semibold text-ink/70">
-            {chosen.distance} remaining
-          </div>
+          <div className="mt-0.5 text-xs font-semibold text-ink/70">remaining to destination</div>
         </div>
         <button
           type="button"

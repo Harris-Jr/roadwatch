@@ -1,16 +1,23 @@
 import type {
   AppSettings,
   AppUser,
+  BusinessSummary,
+  Corridor,
+  CorridorRisk,
   DashboardSummary,
+  HazardBreakdown,
   Plan,
+  PlaceResult,
   Pothole,
   ProcessingJob,
   RoadCategory,
   RoadSegment,
+  RouteOption,
   Severity,
   Status,
   Source,
   UserRole,
+  Vehicle,
 } from "./types";
 
 export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -228,16 +235,21 @@ export async function getReport(id: string): Promise<Pothole> {
 }
 
 export async function submitQuickReport(input: {
-  photo: File;
-  latitude: number;
-  longitude: number;
+  photo?: File;
+  video?: File;
+  latitude?: number;
+  longitude?: number;
   severity?: Severity;
   note?: string;
 }): Promise<Pothole> {
+  if (!input.photo && !input.video) {
+    throw new ApiError(400, "Attach a photo or a short video clip.");
+  }
   const form = new FormData();
-  form.set("photo", input.photo);
-  form.set("latitude", String(input.latitude));
-  form.set("longitude", String(input.longitude));
+  if (input.photo) form.set("photo", input.photo);
+  if (input.video) form.set("video", input.video);
+  if (input.latitude !== undefined) form.set("latitude", String(input.latitude));
+  if (input.longitude !== undefined) form.set("longitude", String(input.longitude));
   if (input.severity) form.set("severity", input.severity);
   if (input.note) form.set("note", input.note);
 
@@ -359,6 +371,141 @@ export async function updateSettings(payload: Partial<AppSettings>): Promise<App
     }),
   });
   return mapSettings(data);
+}
+
+// --- routing (real routes, real hazard scoring) ---
+
+function mapHazards(h: any): HazardBreakdown {
+  return { minor: h.minor, moderate: h.moderate, severe: h.severe, total: h.total, score: h.score };
+}
+
+function mapRouteOption(r: any): RouteOption {
+  return {
+    label: r.label,
+    geometry: r.geometry,
+    distanceKm: r.distance_km,
+    durationMin: r.duration_min,
+    hazards: mapHazards(r.hazards),
+    estimated: r.estimated,
+    steps: (r.steps ?? []).map((s: any) => ({
+      instruction: s.instruction,
+      distanceM: s.distance_m,
+      lat: s.lat,
+      lon: s.lon,
+    })),
+  };
+}
+
+export async function searchPlaces(query: string): Promise<PlaceResult[]> {
+  if (query.trim().length < 2) return [];
+  const data = await request<any[]>(`/routing/search?q=${encodeURIComponent(query)}`, {
+    auth: false,
+  });
+  return data.map((p) => ({ label: p.label, latitude: p.latitude, longitude: p.longitude }));
+}
+
+export async function getRouteOptions(input: {
+  fromLat: number;
+  fromLon: number;
+  toLat: number;
+  toLon: number;
+}): Promise<RouteOption[]> {
+  const data = await request<any[]>("/routing/routes", {
+    method: "POST",
+    body: JSON.stringify({
+      from_lat: input.fromLat,
+      from_lon: input.fromLon,
+      to_lat: input.toLat,
+      to_lon: input.toLon,
+    }),
+    auth: false,
+  });
+  return data.map(mapRouteOption);
+}
+
+// --- business fleet ---
+
+function mapVehicle(v: any): Vehicle {
+  return { id: v.id, name: v.name, plateNumber: v.plate_number ?? undefined };
+}
+
+function mapCorridor(c: any): Corridor {
+  return {
+    id: c.id,
+    name: c.name,
+    startLat: c.start_lat,
+    startLon: c.start_lon,
+    endLat: c.end_lat,
+    endLon: c.end_lon,
+  };
+}
+
+export async function getVehicles(): Promise<Vehicle[]> {
+  const data = await request<any[]>("/business/vehicles");
+  return data.map(mapVehicle);
+}
+
+export async function createVehicle(input: { name: string; plateNumber?: string }): Promise<Vehicle> {
+  const data = await request<any>("/business/vehicles", {
+    method: "POST",
+    body: JSON.stringify({ name: input.name, plate_number: input.plateNumber }),
+  });
+  return mapVehicle(data);
+}
+
+export async function deleteVehicle(id: number): Promise<void> {
+  await request<void>(`/business/vehicles/${id}`, { method: "DELETE" });
+}
+
+export async function getCorridors(): Promise<Corridor[]> {
+  const data = await request<any[]>("/business/corridors");
+  return data.map(mapCorridor);
+}
+
+export async function createCorridor(input: {
+  name: string;
+  startLat: number;
+  startLon: number;
+  endLat: number;
+  endLon: number;
+}): Promise<Corridor> {
+  const data = await request<any>("/business/corridors", {
+    method: "POST",
+    body: JSON.stringify({
+      name: input.name,
+      start_lat: input.startLat,
+      start_lon: input.startLon,
+      end_lat: input.endLat,
+      end_lon: input.endLon,
+    }),
+  });
+  return mapCorridor(data);
+}
+
+export async function deleteCorridor(id: number): Promise<void> {
+  await request<void>(`/business/corridors/${id}`, { method: "DELETE" });
+}
+
+export async function getCorridorRisk(id: number): Promise<CorridorRisk> {
+  const data = await request<any>(`/business/corridors/${id}/risk`);
+  return {
+    corridorId: data.corridor_id,
+    name: data.name,
+    distanceKm: data.distance_km,
+    durationMin: data.duration_min,
+    hazards: mapHazards(data.hazards),
+    estimated: data.estimated,
+  };
+}
+
+export async function getBusinessSummary(): Promise<BusinessSummary> {
+  const data = await request<any>("/business/summary");
+  return {
+    vehicleCount: data.vehicle_count,
+    corridorCount: data.corridor_count,
+    severeHazardsNetworkWide: data.severe_hazards_network_wide,
+    repairsThisWeekNetworkWide: data.repairs_this_week_network_wide,
+  };
 }
 
 export { ApiError };

@@ -16,6 +16,18 @@ services:
       timeout: 5s
       retries: 10
 
+  osrm:
+    image: osrm/osrm-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./osrm-data:/data
+    # Requires zambia-latest.osrm* files in ./osrm-data — see the "Setting
+    # up real routing" section in the README. Won't start successfully
+    # until that one-time setup has been run.
+    command: osrm-routed --algorithm mld /data/zambia-latest.osrm
+
   api:
     build:
       context: .

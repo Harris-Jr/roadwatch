@@ -9,6 +9,7 @@ import {
   MapPin,
   ShieldAlert,
   Upload,
+  Video,
 } from "lucide-react";
 import { LeafletMap } from "@/components/roadwatch/leaflet-map";
 import { getReports, submitQuickReport } from "@/lib/api";
@@ -25,11 +26,13 @@ export const Route = createFileRoute("/report")({
 });
 
 type Step = 1 | 2 | 3;
+type Mode = "photo" | "video";
 
 function ReportFlow() {
   const [step, setStep] = useState<Step>(1);
-  const [photoFile, setPhotoFile] = useState<File | null>(null);
-  const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null);
+  const [mode, setMode] = useState<Mode>("photo");
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
+  const [mediaPreviewUrl, setMediaPreviewUrl] = useState<string | null>(null);
   const [severity, setSeverity] = useState<Severity>("moderate");
   const [note, setNote] = useState("");
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
@@ -39,7 +42,7 @@ function ReportFlow() {
 
   const requestLocation = () => {
     if (!navigator.geolocation) {
-      setGeoError("This browser doesn't support location — you can still submit, but an admin will need to place the pin manually.");
+      setGeoError("This browser doesn't support location — we'll try to read GPS coordinates from your photo/video instead.");
       return;
     }
     navigator.geolocation.getCurrentPosition(
@@ -47,27 +50,29 @@ function ReportFlow() {
         setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
         setGeoError(null);
       },
-      () => setGeoError("Couldn't get your location — check that location access is allowed for this site."),
+      () => setGeoError("Couldn't get your location — if your photo/video has GPS coordinates visible in it, we'll try reading those instead."),
       { enableHighAccuracy: true, timeout: 8000 },
     );
   };
 
-  const handlePhotoSelected = (file: File) => {
-    setPhotoFile(file);
-    setPhotoPreviewUrl(URL.createObjectURL(file));
+  const handleMediaSelected = (file: File) => {
+    setMediaFile(file);
+    setMediaPreviewUrl(URL.createObjectURL(file));
   };
 
   const handleSubmit = async () => {
-    if (!photoFile) return;
+    if (!mediaFile) return;
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const fallback = { lat: -15.3875, lng: 28.3228 }; // Lusaka center, only used if geolocation failed
-      const loc = coords ?? fallback;
+      // No fallback coordinates are sent if geolocation failed — the
+      // backend will try reading GPS text burned into the photo/video via
+      // OCR instead, and only reject if neither source has a location.
       await submitQuickReport({
-        photo: photoFile,
-        latitude: loc.lat,
-        longitude: loc.lng,
+        photo: mode === "photo" ? mediaFile : undefined,
+        video: mode === "video" ? mediaFile : undefined,
+        latitude: coords?.lat,
+        longitude: coords?.lng,
         severity,
         note: note || undefined,
       });
@@ -94,8 +99,11 @@ function ReportFlow() {
       <div className="mx-auto max-w-lg px-4 pb-24 pt-4">
         {step === 1 && (
           <StepCapture
-            photoPreviewUrl={photoPreviewUrl}
-            onPhotoSelected={handlePhotoSelected}
+            mode={mode}
+            setMode={setMode}
+            mediaFile={mediaFile}
+            mediaPreviewUrl={mediaPreviewUrl}
+            onMediaSelected={handleMediaSelected}
             severity={severity}
             setSeverity={setSeverity}
             onNext={() => {
@@ -162,14 +170,20 @@ function Stepper({ step }: { step: Step }) {
 }
 
 function StepCapture({
-  photoPreviewUrl,
-  onPhotoSelected,
+  mode,
+  setMode,
+  mediaFile,
+  mediaPreviewUrl,
+  onMediaSelected,
   severity,
   setSeverity,
   onNext,
 }: {
-  photoPreviewUrl: string | null;
-  onPhotoSelected: (file: File) => void;
+  mode: Mode;
+  setMode: (m: Mode) => void;
+  mediaFile: File | null;
+  mediaPreviewUrl: string | null;
+  onMediaSelected: (file: File) => void;
   severity: Severity;
   setSeverity: (s: Severity) => void;
   onNext: () => void;
@@ -185,37 +199,72 @@ function StepCapture({
         </div>
       </div>
 
+      <div className="flex gap-2">
+        {(["photo", "video"] as Mode[]).map((m) => (
+          <button
+            key={m}
+            onClick={() => {
+              if (m !== mode) {
+                setMode(m);
+              }
+            }}
+            className={`inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-full text-xs font-bold uppercase tracking-wide transition-colors ${
+              mode === m ? "bg-primary text-primary-foreground" : "bg-muted text-ink hover:bg-peach"
+            }`}
+            style={{ minHeight: 0 }}
+          >
+            {m === "photo" ? <Camera className="h-3.5 w-3.5" /> : <Video className="h-3.5 w-3.5" />}
+            {m === "photo" ? "Photo" : "Short video"}
+          </button>
+        ))}
+      </div>
+
       <div>
-        <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-ink/60">Photo</label>
+        <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-ink/60">
+          {mode === "photo" ? "Photo" : "Video (first 8 seconds are scanned)"}
+        </label>
         <input
+          key={mode}
           ref={inputRef}
           type="file"
-          accept="image/*"
+          accept={mode === "photo" ? "image/*" : "video/*"}
           capture="environment"
           className="hidden"
           onChange={(e) => {
             const file = e.target.files?.[0];
-            if (file) onPhotoSelected(file);
+            if (file) onMediaSelected(file);
           }}
         />
         <button
           onClick={() => inputRef.current?.click()}
           className={`flex aspect-video w-full flex-col items-center justify-center gap-2 overflow-hidden rounded-3xl border-2 border-dashed p-6 text-sm font-semibold transition-colors ${
-            photoPreviewUrl
+            mediaPreviewUrl
               ? "border-primary bg-primary/5 text-primary"
               : "border-border bg-card text-muted-foreground hover:bg-muted"
           }`}
           style={{ minHeight: 0 }}
         >
-          {photoPreviewUrl ? (
-            <img src={photoPreviewUrl} alt="Selected pothole photo" className="h-full w-full object-cover" />
-          ) : (
+          {mediaPreviewUrl ? (
+            mode === "photo" ? (
+              <img src={mediaPreviewUrl} alt="Selected pothole photo" className="h-full w-full object-cover" />
+            ) : (
+              <video src={mediaPreviewUrl} className="h-full w-full object-cover" muted playsInline autoPlay loop />
+            )
+          ) : mode === "photo" ? (
             <>
               <Camera className="h-8 w-8" />
               Tap to take a photo or pick from gallery
             </>
+          ) : (
+            <>
+              <Video className="h-8 w-8" />
+              Tap to record or pick a short clip
+            </>
           )}
         </button>
+        {mediaFile && (
+          <p className="mt-1 truncate text-xs text-muted-foreground">{mediaFile.name}</p>
+        )}
       </div>
 
       <div>
@@ -241,7 +290,7 @@ function StepCapture({
       </div>
 
       <button
-        disabled={!photoPreviewUrl}
+        disabled={!mediaPreviewUrl}
         onClick={onNext}
         className="btn-pill btn-pill-primary mt-6 inline-flex w-full items-center justify-center gap-2 text-base disabled:opacity-50"
       >

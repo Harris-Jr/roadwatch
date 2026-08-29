@@ -12,6 +12,7 @@ from geoalchemy2.functions import ST_MakePoint, ST_SetSRID
 from app.database import SessionLocal
 from app.models import (
     AppSettings,
+    Corridor,
     Plan,
     Report,
     ReportSource,
@@ -21,6 +22,7 @@ from app.models import (
     Severity,
     User,
     UserRole,
+    Vehicle,
 )
 from app.security import hash_password
 
@@ -162,6 +164,45 @@ def seed_reports(db):
     print(f"Seeded {len(reports)} reports.")
 
 
+def seed_business_fleet(db):
+    if db.query(Vehicle).count() > 0 or db.query(Corridor).count() > 0:
+        print("Fleet data already seeded, skipping.")
+        return
+
+    business_user = db.query(User).filter(User.email == "fleet@roadwatch.zm").first()
+    if not business_user:
+        print("No business user found — seed users first.")
+        return
+
+    vehicles = [
+        Vehicle(business_id=business_user.id, name="Truck 01", plate_number="ABC 1234"),
+        Vehicle(business_id=business_user.id, name="Truck 02", plate_number="ABC 5678"),
+        Vehicle(business_id=business_user.id, name="Delivery Van 01", plate_number="ABD 9012"),
+    ]
+    db.add_all(vehicles)
+
+    # Real coordinates for actual Lusaka-area corridors — risk for these is
+    # computed live against the real routing engine + real reports, not
+    # stored here.
+    corridors = [
+        Corridor(
+            business_id=business_user.id,
+            name="Lusaka CBD → Kafue Road",
+            start_lat=-15.4067, start_lon=28.2871,
+            end_lat=-15.5011, end_lon=28.1897,
+        ),
+        Corridor(
+            business_id=business_user.id,
+            name="Lusaka → Kabwe (Great North Rd)",
+            start_lat=-15.4067, start_lon=28.2871,
+            end_lat=-14.4469, end_lon=28.4464,
+        ),
+    ]
+    db.add_all(corridors)
+    db.commit()
+    print(f"Seeded {len(vehicles)} vehicles and {len(corridors)} corridors.")
+
+
 def main():
     db = SessionLocal()
     try:
@@ -169,6 +210,7 @@ def main():
         seed_road_segments(db)
         seed_settings(db)
         seed_reports(db)
+        seed_business_fleet(db)
     finally:
         db.close()
 

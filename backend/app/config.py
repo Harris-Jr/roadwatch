@@ -18,6 +18,8 @@ class Settings(BaseSettings):
 
     upload_dir: str = "uploads"
 
+    osrm_url: str = "http://osrm:5000"
+
     frame_sample_interval_seconds: float = 1.0
 
     @property

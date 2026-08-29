@@ -8,6 +8,8 @@ export function LeafletMap(props: {
   selectedId?: string | null;
   onSelect?: (id: string) => void;
   className?: string;
+  routeGeometry?: { type: "LineString"; coordinates: [number, number][] } | null;
+  livePosition?: { lat: number; lng: number } | null;
 }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -20,6 +22,8 @@ export function LeafletMap(props: {
             potholes={props.potholes}
             selectedId={props.selectedId}
             onSelect={props.onSelect}
+            routeGeometry={props.routeGeometry}
+            livePosition={props.livePosition}
           />
         </Suspense>
       ) : (

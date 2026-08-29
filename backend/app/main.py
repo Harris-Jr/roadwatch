@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routers import auth, dashboard, reports, road_segments, settings as settings_router, uploads, users
+from app.routers import auth, business, dashboard, reports, road_segments, routing, settings as settings_router, uploads, users
 
 app = FastAPI(title="RoadWatch Zambia API")
 
@@ -27,6 +27,8 @@ app.include_router(users.router)
 app.include_router(uploads.router)
 app.include_router(dashboard.router)
 app.include_router(settings_router.router)
+app.include_router(routing.router)
+app.include_router(business.router)
 
 
 @app.get("/health")

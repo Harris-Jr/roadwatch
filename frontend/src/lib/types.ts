@@ -78,3 +78,65 @@ export interface AppSettings {
   smsForSevereEnabled: boolean;
   dataRetentionDays: number;
 }
+
+export interface PlaceResult {
+  label: string;
+  latitude: number;
+  longitude: number;
+}
+
+export interface HazardBreakdown {
+  minor: number;
+  moderate: number;
+  severe: number;
+  total: number;
+  score: number;
+}
+
+export interface RouteStep {
+  instruction: string;
+  distanceM: number;
+  lat: number;
+  lon: number;
+}
+
+export interface RouteOption {
+  label: string; // "Safest" | "Balanced" | "Fastest" | "Safest & fastest" | "Alternative"
+  geometry: { type: "LineString"; coordinates: [number, number][] }; // [lon, lat] pairs
+  distanceKm: number;
+  durationMin: number;
+  hazards: HazardBreakdown;
+  estimated: boolean; // true if OSRM was unreachable — this is a straight-line guess
+  steps: RouteStep[];
+}
+
+export interface Vehicle {
+  id: number;
+  name: string;
+  plateNumber?: string;
+}
+
+export interface Corridor {
+  id: number;
+  name: string;
+  startLat: number;
+  startLon: number;
+  endLat: number;
+  endLon: number;
+}
+
+export interface CorridorRisk {
+  corridorId: number;
+  name: string;
+  distanceKm: number;
+  durationMin: number;
+  hazards: HazardBreakdown;
+  estimated: boolean;
+}
+
+export interface BusinessSummary {
+  vehicleCount: number;
+  corridorCount: number;
+  severeHazardsNetworkWide: number;
+  repairsThisWeekNetworkWide: number;
+}

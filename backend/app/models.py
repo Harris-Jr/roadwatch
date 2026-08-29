@@ -171,3 +171,34 @@ class AppSettings(Base):
     email_digest_time: Mapped[str] = mapped_column(String(10), default="07:00")
     sms_for_severe_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     data_retention_days: Mapped[int] = mapped_column(Integer, default=90)
+
+
+class Vehicle(Base):
+    """A business account's registered fleet vehicle. Real, admin-entered
+    data — not a telematics/GPS-tracking integration (that's a materially
+    different, much larger system this doesn't attempt to build)."""
+
+    __tablename__ = "vehicles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    name: Mapped[str] = mapped_column(String(255))
+    plate_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class Corridor(Base):
+    """A business account's saved route corridor — a start/end point pair
+    they want hazard risk tracked for. Risk is computed live against real
+    routing + real reports, not stored/cached here."""
+
+    __tablename__ = "corridors"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    name: Mapped[str] = mapped_column(String(255))
+    start_lat: Mapped[float] = mapped_column(Float)
+    start_lon: Mapped[float] = mapped_column(Float)
+    end_lat: Mapped[float] = mapped_column(Float)
+    end_lon: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

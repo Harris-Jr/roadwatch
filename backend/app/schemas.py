@@ -163,3 +163,93 @@ class AppSettingsUpdate(BaseModel):
     email_digest_time: str | None = None
     sms_for_severe_enabled: bool | None = None
     data_retention_days: int | None = None
+
+
+# --- routing ---
+
+
+class RouteRequest(BaseModel):
+    from_lat: float
+    from_lon: float
+    to_lat: float
+    to_lon: float
+
+
+class HazardBreakdownOut(BaseModel):
+    minor: int
+    moderate: int
+    severe: int
+    total: int
+    score: int
+
+
+class RouteStepOut(BaseModel):
+    instruction: str
+    distance_m: float
+    lat: float
+    lon: float
+
+
+class RouteOptionOut(BaseModel):
+    label: str
+    geometry: dict
+    distance_km: float
+    duration_min: float
+    hazards: HazardBreakdownOut
+    estimated: bool
+    steps: list[RouteStepOut]
+
+
+class PlaceResult(BaseModel):
+    label: str
+    latitude: float
+    longitude: float
+
+
+# --- business fleet ---
+
+
+class VehicleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    plate_number: str | None
+
+
+class VehicleCreate(BaseModel):
+    name: str
+    plate_number: str | None = None
+
+
+class CorridorOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    start_lat: float
+    start_lon: float
+    end_lat: float
+    end_lon: float
+
+
+class CorridorCreate(BaseModel):
+    name: str
+    start_lat: float
+    start_lon: float
+    end_lat: float
+    end_lon: float
+
+
+class CorridorRisk(BaseModel):
+    corridor_id: int
+    name: str
+    distance_km: float
+    duration_min: float
+    hazards: HazardBreakdownOut
+    estimated: bool
+
+
+class BusinessSummary(BaseModel):
+    vehicle_count: int
+    corridor_count: int
+    severe_hazards_network_wide: int
+    repairs_this_week_network_wide: int

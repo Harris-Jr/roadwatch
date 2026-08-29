@@ -1,5 +1,13 @@
 import "leaflet/dist/leaflet.css";
-import { MapContainer, TileLayer, Marker, Popup, useMap, ZoomControl } from "react-leaflet";
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  Polyline,
+  useMap,
+  ZoomControl,
+} from "react-leaflet";
 import L from "leaflet";
 import { useEffect } from "react";
 import type { Pothole } from "@/lib/types";
@@ -25,6 +33,17 @@ function makeIcon(severity: Pothole["severity"], active: boolean) {
   });
 }
 
+const liveIcon = L.divIcon({
+  className: "rw-live-marker",
+  html: `<span style="
+    display:block;width:18px;height:18px;border-radius:9999px;
+    background:#1B3D33;border:3px solid #fff;
+    box-shadow:0 0 0 6px rgba(27,61,51,.25),0 2px 8px rgba(0,0,0,.4);
+  "></span>`,
+  iconSize: [18, 18],
+  iconAnchor: [9, 9],
+});
+
 function FlyTo({ lat, lng }: { lat: number | null; lng: number | null }) {
   const map = useMap();
   useEffect(() => {
@@ -33,16 +52,35 @@ function FlyTo({ lat, lng }: { lat: number | null; lng: number | null }) {
   return null;
 }
 
+function FitBounds({ positions }: { positions: [number, number][] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (positions.length >= 2) {
+      map.fitBounds(positions, { padding: [40, 40] });
+    }
+  }, [positions, map]);
+  return null;
+}
+
 export default function LeafletMapInner({
   potholes,
   selectedId,
   onSelect,
+  routeGeometry,
+  livePosition,
 }: {
   potholes: Pothole[];
   selectedId?: string | null;
   onSelect?: (id: string) => void;
+  // GeoJSON LineString coordinates, [lon, lat] pairs — matches what the
+  // backend/OSRM returns directly, converted to [lat, lon] for Leaflet here.
+  routeGeometry?: { type: "LineString"; coordinates: [number, number][] } | null;
+  livePosition?: { lat: number; lng: number } | null;
 }) {
   const active = potholes.find((p) => p.id === selectedId);
+  const routeLatLngs: [number, number][] =
+    routeGeometry?.coordinates.map(([lon, lat]) => [lat, lon]) ?? [];
+
   return (
     <MapContainer
       center={[-15.3875, 28.3228]}
@@ -57,6 +95,13 @@ export default function LeafletMapInner({
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
       <ZoomControl position="topright" />
+      {routeLatLngs.length > 1 && (
+        <>
+          <Polyline positions={routeLatLngs} pathOptions={{ color: "#1B3D33", weight: 5, opacity: 0.85 }} />
+          <FitBounds positions={routeLatLngs} />
+        </>
+      )}
+      {livePosition && <Marker position={[livePosition.lat, livePosition.lng]} icon={liveIcon} />}
       {potholes.map((p) => (
         <Marker
           key={p.id}
