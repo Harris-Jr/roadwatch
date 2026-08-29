@@ -10,7 +10,7 @@ from app.schemas import ReportOut, ReportUpdate
 from app.services.geocoding import reverse_geocode_road_name
 from ai.inference import ClassificationResult, classifier
 from ai.frames import extract_frames
-from ai.location import resolve_from_ocr
+from ai.location import resolve_from_exif, resolve_from_ocr, resolve_from_video_metadata
 from app.services.storage import absolute_path, save_pil_image, save_upload
 
 # How much of a Quick Report video clip to actually scan. This is meant to
@@ -93,6 +93,8 @@ def submit_quick_report(
         severe_threshold=app_settings.severe_threshold,
     )
 
+    video_path: str | None = None
+
     if photo:
         representative_image = Image.open(photo.file)
         result = classifier.classify(representative_image, **thresholds)
@@ -104,12 +106,12 @@ def submit_quick_report(
         # most confident about as the representative detection — same
         # classifier, same preprocessing, just applied per-frame instead of
         # to a single upload.
-        tmp_video_path = save_upload(video, subdir="quick_reports")
+        video_path = save_upload(video, subdir="quick_reports")
         representative_image: Image.Image | None = None
         result: ClassificationResult | None = None
 
         for frame, ts in extract_frames(
-            absolute_path(tmp_video_path), QUICK_VIDEO_FRAME_INTERVAL
+            absolute_path(video_path), QUICK_VIDEO_FRAME_INTERVAL
         ):
             if ts > QUICK_VIDEO_MAX_SECONDS:
                 break
@@ -129,7 +131,7 @@ def submit_quick_report(
         saved_path = (
             save_pil_image(representative_image, subdir="quick_reports")
             if representative_image
-            else tmp_video_path
+            else video_path
         )
 
     if not result.is_pothole and severity is None:
@@ -141,11 +143,26 @@ def submit_quick_report(
             ),
         )
 
-    # Location: prefer the coordinates the client sent (real device GPS).
-    # If those weren't provided — geolocation denied/unavailable — fall
-    # back to OCR, reading coordinates burned into the image itself (the
-    # same approach your original prototype used for GPS-camera-stamped
-    # photos). Only works if the photo/frame actually has visible GPS text.
+    # Location resolution — the goal is that the person never has to think
+    # about this. Try, in order:
+    #   1. Real device GPS, if the browser provided it.
+    #   2. EXIF metadata (photo) or container metadata (video) — most
+    #      phones embed this automatically and invisibly, no special app
+    #      needed. This covers the common case.
+    #   3. OCR — coordinates visibly burned into the image as text, which
+    #      only GPS-camera-overlay apps produce. Narrower case, but still
+    #      worth trying before giving up.
+    if latitude is None or longitude is None:
+        metadata_coords = (
+            resolve_from_exif(representative_image)
+            if photo and representative_image is not None
+            else resolve_from_video_metadata(absolute_path(video_path))
+            if video_path
+            else None
+        )
+        if metadata_coords:
+            latitude, longitude = metadata_coords
+
     if (latitude is None or longitude is None) and representative_image is not None:
         ocr_coords = resolve_from_ocr(representative_image)
         if ocr_coords:
@@ -155,8 +172,9 @@ def submit_quick_report(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                "No location available. Enable location access, or use a "
-                "photo/video with GPS coordinates visible in the frame."
+                "No location available. Enable location access in your "
+                "browser, or make sure location is turned on for your "
+                "camera app before taking the photo/video."
             ),
         )
 

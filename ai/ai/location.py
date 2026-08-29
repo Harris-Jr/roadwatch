@@ -22,17 +22,78 @@ Three strategies, tried in order:
 
 import csv
 import re
+import subprocess
 
 import pytesseract
 from PIL import Image
 
 _COORD_PATTERN = re.compile(r"[$]?S?(-?\d+\.\d+)[^E]*E\s?(\d+\.\d+)")
+_ISO6709_PATTERN = re.compile(r"([+-]\d+\.?\d*)([+-]\d+\.?\d*)")
 
 
 def _clean_ocr_text(text: str) -> str:
     text = re.sub(r"(\d)-(\d)", r"\1.\2", text)
     text = re.sub(r"(\d+)\.\s+(\d+)", r"\1.\2", text)
     return text
+
+
+def _exif_to_degrees(value) -> float | None:
+    if not value or len(value) != 3:
+        return None
+    d, m, s = value
+    return float(d) + float(m) / 60 + float(s) / 3600
+
+
+def resolve_from_exif(image: Image.Image) -> tuple[float, float] | None:
+    """Reads GPS coordinates most phone cameras embed automatically in every
+    photo, invisibly, via EXIF metadata — no special GPS-camera app needed.
+    This covers the common case; resolve_from_ocr below only covers photos
+    from apps that stamp coordinates as visible text on the image."""
+    try:
+        exif = image.getexif()
+        gps_ifd = exif.get_ifd(0x8825)  # GPSInfo tag
+        if not gps_ifd:
+            return None
+
+        lat = _exif_to_degrees(gps_ifd.get(2))
+        lon = _exif_to_degrees(gps_ifd.get(4))
+        if lat is None or lon is None:
+            return None
+
+        if gps_ifd.get(1) == "S":
+            lat = -lat
+        if gps_ifd.get(3) == "W":
+            lon = -lon
+        return lat, lon
+    except (AttributeError, KeyError, ValueError, TypeError):
+        return None
+
+
+def resolve_from_video_metadata(video_path: str) -> tuple[float, float] | None:
+    """Reads GPS coordinates embedded in a video file's own container
+    metadata (most phones write this automatically), via ffprobe. Good for
+    a short Quick Report clip filmed from one spot — not appropriate for a
+    multi-minute survey drive where location actually changes throughout
+    the video, which is what the per-frame OCR path below is for."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-show_entries",
+                "format_tags=location,format_tags=com.apple.quicktime.location.ISO6709",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path,
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        output = result.stdout.strip().splitlines()
+        for line in output:
+            match = _ISO6709_PATTERN.match(line.strip())
+            if match:
+                return float(match.group(1)), float(match.group(2))
+    except (subprocess.SubprocessError, OSError, ValueError):
+        pass
+    return None
 
 
 def resolve_from_ocr(frame: Image.Image) -> tuple[float, float] | None:
