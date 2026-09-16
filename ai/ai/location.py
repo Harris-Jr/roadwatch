@@ -107,7 +107,12 @@ def resolve_from_ocr(frame: Image.Image) -> tuple[float, float] | None:
 
     lat = match.group(1)
     lon = match.group(2)
-    if "$" in text or "S" in text:
+    # Only treat a hemisphere marker actually adjacent to the coordinate
+    # (captured by the optional `[$]?S?` right before the lat group) as a
+    # sign indicator — not the whole OCR string, which false-positives on
+    # unrelated overlay text like "GPS" or "SPEED".
+    hemisphere_marker = text[match.start(): match.start(1)]
+    if "$" in hemisphere_marker or "S" in hemisphere_marker:
         lat = f"-{lat.lstrip('-')}"
 
     return float(lat), float(lon)

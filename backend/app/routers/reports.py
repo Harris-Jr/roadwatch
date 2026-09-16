@@ -1,11 +1,12 @@
 from geoalchemy2.functions import ST_MakePoint, ST_SetSRID
+from geoalchemy2.shape import to_shape
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from PIL import Image
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.deps import require_government
-from app.models import AppSettings, Report, ReportSource, ReportStatus, Severity, User
+from app.deps import get_current_user_optional, require_government
+from app.models import AppSettings, Report, ReportSource, ReportStatus, Severity, User, UserRole
 from app.schemas import ReportOut, ReportUpdate
 from app.services.geocoding import reverse_geocode_road_name
 from ai.inference import ClassificationResult, classifier
@@ -40,7 +41,20 @@ def list_reports(
     council: str | None = None,
     confirmed_only: bool = True,
     db: Session = Depends(get_db),
+    user: User | None = Depends(get_current_user_optional),
 ):
+    # The public map only ever needs confirmed reports and requires no
+    # login. Seeing unconfirmed reports (Quick Reports and video-survey
+    # detections still in the review queue) is admin-only — without this
+    # check, anyone could call ?confirmed_only=false directly and read the
+    # review queue without authenticating, bypassing the confirm/reject
+    # workflow entirely.
+    if not confirmed_only and (user is None or user.role != UserRole.government):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Viewing unconfirmed reports requires a government account.",
+        )
+
     query = db.query(Report)
     if confirmed_only:
         query = query.filter(Report.confirmed.is_(True))
@@ -233,6 +247,9 @@ def confirm_report(
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
     report.confirmed = True
+    if report.road_name in (None, "", "Unnamed road"):
+        point = to_shape(report.location)
+        report.road_name = reverse_geocode_road_name(point.y, point.x)
     db.commit()
     db.refresh(report)
     return ReportOut.from_orm_with_point(report)

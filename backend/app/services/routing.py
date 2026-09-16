@@ -35,6 +35,16 @@ logger = logging.getLogger(__name__)
 # count as "along" that route.
 HAZARD_BUFFER_METERS = 60
 
+# Wider buffer for the straight-line fallback (no OSRM) — a straight line
+# between two points doesn't follow real roads, so a tight buffer would
+# miss hazards on the actual road a driver would take.
+FALLBACK_HAZARD_BUFFER_METERS = 300
+
+# Assumed average speed (km/h) for the straight-line fallback's duration
+# estimate. Used explicitly below rather than folded into a formula that
+# only happens to work at this one value.
+FALLBACK_SPEED_KMH = 60
+
 # Relative severity weights for ranking routes — severe hazards count for
 # more than minor ones when picking the "Safest" option.
 SEVERITY_WEIGHT = {"minor": 1, "moderate": 3, "severe": 6}
@@ -169,7 +179,9 @@ def _fetch_osrm_alternatives(
         return None
 
 
-def _score_route(db: Session, geojson_linestring: dict) -> HazardBreakdown:
+def _score_route(
+    db: Session, geojson_linestring: dict, buffer_meters: float = HAZARD_BUFFER_METERS
+) -> HazardBreakdown:
     import json
 
     result = db.execute(
@@ -186,7 +198,7 @@ def _score_route(db: Session, geojson_linestring: dict) -> HazardBreakdown:
             GROUP BY severity
             """
         ),
-        {"geom": json.dumps(geojson_linestring), "buffer": HAZARD_BUFFER_METERS},
+        {"geom": json.dumps(geojson_linestring), "buffer": buffer_meters},
     )
     breakdown = HazardBreakdown()
     for row in result:
@@ -224,12 +236,12 @@ def get_route_options(
             "coordinates": [[from_lon, from_lat], [to_lon, to_lat]],
         }
         dist = _haversine_km(from_lat, from_lon, to_lat, to_lon)
-        hazards = _score_route(db, geometry)
+        hazards = _score_route(db, geometry, buffer_meters=FALLBACK_HAZARD_BUFFER_METERS)
         options.append(
             RouteOption(
                 geometry=geometry,
                 distance_km=round(dist, 1),
-                duration_min=round(dist / 60 * 60),  # assume 60 km/h average
+                duration_min=round(dist / FALLBACK_SPEED_KMH * 60),
                 hazards=hazards,
                 estimated=True,
                 steps=[

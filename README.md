@@ -57,12 +57,12 @@ guessing or asking the user to pick a portal.
 
 ### For Motorists (Individual accounts)
 - **Driver dashboard** — recent public activity (see [Known Limitations](#known-limitations) — not yet filtered to "my reports" specifically)
-- **Navigate** — destination input and route options (illustrative — see Roadmap)
+- **Navigate** — real destination search, real OSRM routing, real PostGIS hazard scoring (see Real Routing Flow below)
 - Free / Premium plan selection at signup
 
 ### For Businesses / Fleet Accounts
 - **Business dashboard** — severe-hazard count and live map, both real
-- Corridor risk table and vehicle tracking — UI built, not yet backed by a data model (clearly marked in code)
+- Corridor risk table and vehicle tracking — real `vehicles`/`corridors` tables, risk computed live via the same routing + hazard-scoring engine as Navigate (see Corridor Risk Flow below; vehicles are registered records, not live GPS telematics — see Known Limitations)
 
 ### For Government Staff (RDA / Council)
 - **Dashboard** — open / in-progress / fixed-this-month counts, average resolution time, 12-month reports chart, live map — all computed from real data

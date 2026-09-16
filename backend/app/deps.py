@@ -31,6 +31,22 @@ def get_current_user(
     return user
 
 
+def get_current_user_optional(
+    token: str | None = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> User | None:
+    """Like get_current_user, but returns None instead of raising when no
+    token is presented or it's invalid. For endpoints that are public by
+    default but need to gate specific query params/behavior behind a role
+    (e.g. GET /reports?confirmed_only=false)."""
+    if token is None:
+        return None
+    payload = decode_access_token(token)
+    if payload is None or "sub" not in payload:
+        return None
+    return db.query(User).filter(User.id == int(payload["sub"])).first()
+
+
 def require_roles(*roles: UserRole):
     def checker(user: User = Depends(get_current_user)) -> User:
         if user.role not in roles:
