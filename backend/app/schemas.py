@@ -1,6 +1,7 @@
+import re
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, field_validator, model_validator
 
 from app.models import (
     JobStatus,
@@ -24,6 +25,30 @@ class SignupRequest(BaseModel):
     plan: Plan | None = None
     organization: str | None = None
 
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long.")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password must include a lowercase letter.")
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must include an uppercase letter.")
+        if not re.search(r"\d", v):
+            raise ValueError("Password must include a number.")
+        if not re.search(r"[^\w\s]", v):
+            raise ValueError("Password must include a special character.")
+        return v
+
+    @model_validator(mode="after")
+    def government_has_no_plan(self):
+        # Plan (free/premium/business) only makes sense for individual and
+        # business accounts; government accounts are provisioned, not
+        # self-service subscriptions.
+        if self.role == UserRole.government and self.plan is not None:
+            raise ValueError("Government accounts don't use a plan.")
+        return self
+
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -43,8 +68,25 @@ class UserOut(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
+    expires_in: int  # seconds until the access token expires
     user: UserOut
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
+
+class RefreshResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
 
 
 # --- Road segments ---

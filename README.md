@@ -131,6 +131,18 @@ guessing or asking the user to pick a portal.
 | organization | string, nullable | e.g. "Road Development Agency", "Lusaka City Council" — government accounts only |
 | created_at | timestamp | Account creation date |
 
+### refresh_sessions
+| Column | Type | Description |
+|--------|------|--------------|
+| id | integer | Primary key |
+| user_id | integer | FK → users, indexed |
+| token_hash | string | SHA-256 hex digest of the refresh token — the raw token is never stored |
+| jti | string | Unique ID of the access token issued alongside this refresh session |
+| created_at / expires_at | timestamp | Issuance and expiry (`REFRESH_TOKEN_EXPIRE_DAYS`) |
+| revoked_at | timestamp, nullable | Set on logout, rotation, or reuse-detection |
+| replaced_by_id | integer, nullable | FK → refresh_sessions — points at the session this one rotated into, forming a chain reuse-detection can walk |
+| last_used_at / last_used_ip / created_ip / user_agent | | Audit trail for the session |
+
 ### road_segments
 | Column | Type | Description |
 |--------|------|--------------|
@@ -220,7 +232,7 @@ endpoints a business wants tracked.
 
 | Router | Endpoints | Notes |
 |--------|-----------|-------|
-| `auth` | `POST /auth/signup`, `POST /auth/login`, `GET /auth/me` | Returns a JWT + the real role on login/signup |
+| `auth` | `POST /auth/signup`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me` | See the Authentication section below for the full token model |
 | `reports` | `GET /reports`, `GET /reports/{id}`, `POST /reports/quick-report`, `PATCH /reports/{id}`, `POST /reports/{id}/confirm`, `DELETE /reports/{id}` | Quick Report is unauthenticated by design |
 | `road-segments` | `GET`, `POST`, `DELETE /road-segments/{id}` | Mutations require `government` role |
 | `users` | `GET /users` | `government` role only |
@@ -231,6 +243,67 @@ endpoints a business wants tracked.
 | `business` | `GET/POST /business/vehicles`, `DELETE /business/vehicles/{id}`, `GET/POST /business/corridors`, `DELETE /business/corridors/{id}`, `GET /business/corridors/{id}/risk`, `GET /business/summary` | `business` role only |
 
 Full interactive docs at `/docs` once the API is running.
+
+---
+
+## Authentication
+
+Two token types, deliberately kept separate:
+
+| | Access token | Refresh token |
+|---|---|---|
+| Format | JWT (HS256) | Opaque random string, not a JWT |
+| Lifetime | 15 min (`ACCESS_TOKEN_EXPIRE_MINUTES`) | 30 days (`REFRESH_TOKEN_EXPIRE_DAYS`) |
+| Sent as | `Authorization: Bearer <token>` on every request | Only to `/auth/refresh` and `/auth/logout` |
+| Stored server-side? | No — stateless, verified by signature alone | Yes — SHA-256 hash in `refresh_sessions`, never the raw value |
+| Revocable before expiry? | No (see below) | Yes |
+
+**Why an access token can't be instantly revoked:** it's a stateless JWT — the server verifies it by signature and expiry alone, with no database lookup on every request (that's the whole point of using a JWT rather than a session cookie here). Logging out or detecting token-reuse revokes the *refresh* session immediately, which stops any *future* `/auth/refresh` call — but an access token already handed to the browser stays valid until its own 15-minute expiry runs out. That's the trade-off for keeping every authenticated request fast; the short lifetime bounds how long a compromised access token stays useful. If you need instant access-token revocation (e.g. "immediately kill this admin's session everywhere"), that requires a denylist keyed by `jti` checked on every request, which was deliberately left out here as unnecessary complexity for this project's threat model — the 15-minute window is the accepted cost.
+
+**Login/signup response:**
+```json
+{
+  "access_token": "eyJ...",
+  "refresh_token": "8f3a...(opaque, ~64 chars)",
+  "token_type": "bearer",
+  "expires_in": 900,
+  "user": { "id": 1, "email": "...", "full_name": "...", "role": "individual", "plan": "free", "organization": null }
+}
+```
+
+**Refresh rotation:** every successful `POST /auth/refresh` revokes the refresh token you sent and returns a brand-new access + refresh pair — the old refresh token cannot be used again. If a revoked refresh token *is* presented again (e.g. an attacker replayed a copy they stole), that's treated as evidence of theft: the session it rotated into (and everything descended from it) is revoked too, forcing a fresh login rather than only closing the one door the attacker happened to use.
+
+**Logout (`POST /auth/logout`)** revokes the refresh session tied to the refresh token you send. It does not (and architecturally cannot) invalidate an already-issued access token — see above.
+
+**Password requirements:** minimum 8 characters, at least one uppercase, one lowercase, one digit, one special character. Enforced by a Pydantic validator on `SignupRequest` (`backend/app/schemas.py`).
+
+**Rate limiting:** login/signup/refresh are limited per client IP, fixed 60-second window (`backend/app/rate_limit.py`) — defaults `5/min` for login and signup, `20/min` for refresh (`AUTH_RATE_LIMIT_*_PER_MINUTE` in `.env`). This is in-process memory, not Redis — correct for the single `uvicorn` worker this project's `docker-compose.yml` runs; scaling to multiple workers/replicas would need a shared store (see the comment at the top of `rate_limit.py`). If this runs behind Nginx or another reverse proxy, make sure the real client IP reaches the app (`--proxy-headers` / `X-Forwarded-For`), or every request will appear to come from the proxy and share one rate-limit bucket.
+
+**JWT claim validation:** every access token is checked for signature, algorithm (explicit allow-list — never `alg: none`), issuer (`JWT_ISSUER`), audience (`JWT_AUDIENCE`), expiration, and `type: "access"` (a refresh token can never be used where an access token is expected, and vice versa — they're not even the same kind of string).
+
+**Frontend token storage:** both tokens live in `localStorage` (`frontend/src/lib/api.ts`), which is readable by any script running on the page (XSS risk). This is a known, documented trade-off rather than an oversight — see the comment above `StoredAuth` in `api.ts` for what a stronger (httpOnly-cookie) design would need. The frontend's `request()` helper transparently retries once with a refreshed access token on a `401`, so a session doesn't just die the moment the 15-minute access token expires; the user only sees a real logout once the *refresh* token itself is expired or revoked.
+
+**Environment variables** (see `.env.example` for the full block with comments):
+```env
+JWT_SECRET=...                          # openssl rand -hex 32
+JWT_ALGORITHM=HS256
+JWT_ISSUER=roadwatch-zambia
+JWT_AUDIENCE=roadwatch-api
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+REFRESH_TOKEN_EXPIRE_DAYS=30
+BCRYPT_ROUNDS=12
+AUTH_RATE_LIMIT_LOGIN_PER_MINUTE=5
+AUTH_RATE_LIMIT_REGISTER_PER_MINUTE=5
+AUTH_RATE_LIMIT_REFRESH_PER_MINUTE=20
+ENVIRONMENT=development                 # set to "production" to enforce a real JWT_SECRET at startup
+```
+
+**Tests:** `backend/tests/test_auth.py` covers registration (valid/invalid email/weak password/duplicate/hashing), login (correct/wrong/unknown-email/generic-error), access-token validation (expired/bad signature/bad issuer/bad audience/missing subject/wrong type/malformed), refresh rotation (valid/invalid/old-token-reuse-rejected/reuse-revokes-chain), logout, password hashing, and rate limiting. Run with:
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest
+```
 
 ---
 
@@ -441,6 +514,11 @@ Copy `.env.example` to `.env` at the repo root — one file, read by both
 
 - [ ] `DATABASE_URL`
 - [ ] `JWT_SECRET` — generate with `openssl rand -hex 32`, don't ship the placeholder
+- [ ] `JWT_ISSUER` / `JWT_AUDIENCE` — only needs changing if you're running multiple environments off one secret
+- [ ] `ACCESS_TOKEN_EXPIRE_MINUTES` / `REFRESH_TOKEN_EXPIRE_DAYS` — see [Authentication](#authentication)
+- [ ] `BCRYPT_ROUNDS` — 12 is a reasonable default
+- [ ] `AUTH_RATE_LIMIT_LOGIN_PER_MINUTE` / `AUTH_RATE_LIMIT_REGISTER_PER_MINUTE` / `AUTH_RATE_LIMIT_REFRESH_PER_MINUTE`
+- [ ] `ENVIRONMENT` — set to `production` to make the app refuse to boot with a default/weak `JWT_SECRET`
 - [ ] `CORS_ORIGINS` — add your real domain before deploying
 - [ ] `OSRM_URL` — defaults to the docker-compose `osrm` service; see [Setting Up Real Routing](#setting-up-real-routing)
 - [ ] `MODEL_INPUT_SIZE` — leave at 224 unless you retrain against a different input size
@@ -492,6 +570,9 @@ Verify it's working: `curl http://localhost:5000/route/v1/driving/28.28,-15.41;2
 ## Known Limitations
 
 - **Quick Report is anonymous** — no `reported_by` link between a report and a logged-in individual account yet, so the driver dashboard shows recent public activity rather than a true per-user filter
+- **Access tokens can't be instantly revoked** — they're stateless JWTs; logout/reuse-detection revokes the refresh session immediately but an already-issued access token stays valid until its own 15-minute expiry. See [Authentication](#authentication) for why this is a deliberate trade-off, not an oversight.
+- **Auth rate limiting is in-process memory, not Redis** — correct for the single `uvicorn` worker this project runs today; scaling to multiple workers/replicas needs a shared store. See the comment at the top of `backend/app/rate_limit.py`.
+- **Refresh/access tokens live in `localStorage`**, not an httpOnly cookie — readable by any script on the page (XSS risk). A cookie-based design would need the backend to set/clear it directly (CORS + SameSite work) — noted as a deliberate scope decision in `frontend/src/lib/api.ts`, not fixed silently.
 - **OSRM needs a one-time real-data setup** (above) before routing/corridor-risk return real routes instead of straight-line estimates — this can't be pre-verified in a sandboxed environment, only wired correctly per OSRM's documented API
 - **Turn-by-turn is maneuver-based, not voice-guided** — real instructions derived from OSRM's actual maneuver data, shown as text tied to live GPS proximity, but there's no spoken audio guidance or automatic rerouting if you go off-route
 - **No live vehicle/GPS fleet tracking** — `vehicles` are real registered records (name, plate), not telematics hardware integration; "active" isn't a tracked live state

@@ -1,5 +1,5 @@
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 
 from geoalchemy2 import Geometry
 from sqlalchemy import (
@@ -185,6 +185,43 @@ class Vehicle(Base):
     name: Mapped[str] = mapped_column(String(255))
     plate_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class RefreshSession(Base):
+    """One row per issued refresh token. The raw token is never stored —
+    only its SHA-256 hash (see app.security.generate_refresh_token). A row
+    represents one link in a rotation chain: each successful /auth/refresh
+    revokes the presented session and creates a new one, pointed back at
+    the old one via replaced_by_id, so a reused/stolen token can be
+    detected (see services/auth_service.rotate_refresh_token)."""
+
+    __tablename__ = "refresh_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    jti: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Points at the session that replaced this one when it was rotated —
+    # lets us walk/invalidate the whole chain if a revoked token is reused.
+    replaced_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("refresh_sessions.id"), nullable=True
+    )
+
+    created_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_used_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    user: Mapped["User"] = relationship()
+
+    @property
+    def is_active(self) -> bool:
+        return self.revoked_at is None and self.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Corridor(Base):

@@ -7,6 +7,8 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.routers import auth, business, dashboard, reports, road_segments, routing, settings as settings_router, uploads, users
 
+settings.validate_production_secrets()  # fails fast rather than booting insecurely
+
 app = FastAPI(title="RoadWatch Zambia API")
 
 app.add_middleware(

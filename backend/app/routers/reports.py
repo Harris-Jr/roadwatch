@@ -72,9 +72,18 @@ def list_reports(
 
 
 @router.get("/{report_id}", response_model=ReportOut)
-def get_report(report_id: int, db: Session = Depends(get_db)):
+def get_report(
+    report_id: int,
+    db: Session = Depends(get_db),
+    user: User | None = Depends(get_current_user_optional),
+):
     report = db.query(Report).filter(Report.id == report_id).first()
     if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    # Same boundary as list_reports: an unconfirmed report (still in the
+    # review queue) shouldn't be individually fetchable by guessing/
+    # enumerating IDs either, not just hidden from the list view.
+    if not report.confirmed and (user is None or user.role != UserRole.government):
         raise HTTPException(status_code=404, detail="Report not found")
     return ReportOut.from_orm_with_point(report)
 

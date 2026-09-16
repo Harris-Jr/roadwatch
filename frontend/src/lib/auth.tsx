@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { AppUser } from "./types";
-import { clearStoredAuth, getStoredAuth, setStoredAuth, type StoredAuth } from "./api";
+import { clearStoredAuth, getStoredAuth, logoutRequest, setStoredAuth, type StoredAuth } from "./api";
 
 interface AuthContextValue {
   user: AppUser | null;
@@ -33,6 +33,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = () => {
+    // Fire the server-side revoke in the background — don't make the UI
+    // wait on a network round-trip to log the person out locally. Grab
+    // the refresh token before clearing storage, since clearing removes
+    // it. If this fails (offline, server down), the refresh token just
+    // sits unused until it naturally expires (REFRESH_TOKEN_EXPIRE_DAYS)
+    // — logging out locally doesn't depend on it succeeding.
+    const stored = getStoredAuth();
+    if (stored?.refreshToken) {
+      void logoutRequest(stored.refreshToken);
+    }
     clearStoredAuth();
     setUser(null);
     setToken(null);

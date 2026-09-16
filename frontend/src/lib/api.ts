@@ -25,10 +25,22 @@ export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const AUTH_STORAGE_KEY = "roadwatch_auth";
 
 export interface StoredAuth {
-  token: string;
+  token: string; // access token — short-lived (15 min by default)
+  refreshToken: string; // long-lived, revocable — used only to mint a new access token
   user: AppUser;
 }
 
+// KNOWN TRADE-OFF: both tokens live in localStorage, which is readable by
+// any script that runs on this origin (XSS risk) — same as before this
+// refresh-token work, just now true of two tokens instead of one. The
+// access token's short lifetime limits how long a stolen one is useful;
+// the refresh token's server-side revocability (via /auth/logout, or
+// reuse detection on /auth/refresh) limits how long a stolen refresh
+// token is useful. A stronger architecture would keep the refresh token
+// in an httpOnly cookie so JS can never read it at all — that needs the
+// backend to set/clear that cookie itself (CORS + SameSite work), which
+// is a bigger change than this pass makes. Noted here rather than fixed
+// silently so it's a deliberate, visible decision.
 export function getStoredAuth(): StoredAuth | null {
   if (typeof window === "undefined") return null;
   const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
@@ -56,22 +68,80 @@ class ApiError extends Error {
   }
 }
 
+// Dedupes concurrent refresh attempts — if five requests all 401 at once,
+// only one /auth/refresh call goes out; the other four await the same
+// promise instead of racing to rotate the same refresh token (the backend
+// would only let one of them win anyway, per rotation semantics).
+let refreshInFlight: Promise<StoredAuth | null> | null = null;
+
+async function performRefresh(): Promise<StoredAuth | null> {
+  const stored = getStoredAuth();
+  if (!stored) return null;
+
+  try {
+    const response = await fetch(`${API_URL}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: stored.refreshToken }),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    const next: StoredAuth = {
+      token: data.access_token,
+      refreshToken: data.refresh_token,
+      user: stored.user,
+    };
+    setStoredAuth(next);
+    return next;
+  } catch {
+    return null;
+  }
+}
+
 async function request<T>(
   path: string,
-  options: RequestInit & { auth?: boolean } = {},
+  options: RequestInit & { auth?: boolean; skipRefresh?: boolean } = {},
 ): Promise<T> {
   const headers = new Headers(options.headers);
   if (!(options.body instanceof FormData) && options.body) {
     headers.set("Content-Type", "application/json");
   }
 
-  if (options.auth !== false) {
+  const useAuth = options.auth !== false;
+  if (useAuth) {
     const stored = getStoredAuth();
     if (stored) headers.set("Authorization", `Bearer ${stored.token}`);
   }
 
   const response = await fetch(`${API_URL}${path}`, { ...options, headers });
 
+  if (response.status === 401 && useAuth && !options.skipRefresh && getStoredAuth()) {
+    // Access token likely expired mid-session — try exactly one silent
+    // refresh, then retry the original request once. If the refresh
+    // itself fails (refresh token also expired/revoked), fall through
+    // to the normal error path below, which surfaces as a 401 the caller
+    // (or the route guards in auth.tsx) can react to by sending the user
+    // back to /auth.
+    refreshInFlight ??= performRefresh().finally(() => {
+      refreshInFlight = null;
+    });
+    const refreshed = await refreshInFlight;
+    if (refreshed) {
+      const retryHeaders = new Headers(options.headers);
+      if (!(options.body instanceof FormData) && options.body) {
+        retryHeaders.set("Content-Type", "application/json");
+      }
+      retryHeaders.set("Authorization", `Bearer ${refreshed.token}`);
+      const retryResponse = await fetch(`${API_URL}${path}`, { ...options, headers: retryHeaders });
+      return handleResponse<T>(retryResponse);
+    }
+    clearStoredAuth(); // refresh token is dead too — force a real re-login
+  }
+
+  return handleResponse<T>(response);
+}
+
+async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let detail = response.statusText;
     try {
@@ -176,7 +246,7 @@ export async function login(email: string, password: string): Promise<StoredAuth
     body: JSON.stringify({ email, password }),
     auth: false,
   });
-  return { token: data.access_token, user: mapUser(data.user) };
+  return { token: data.access_token, refreshToken: data.refresh_token, user: mapUser(data.user) };
 }
 
 export async function signup(payload: {
@@ -199,12 +269,31 @@ export async function signup(payload: {
     }),
     auth: false,
   });
-  return { token: data.access_token, user: mapUser(data.user) };
+  return { token: data.access_token, refreshToken: data.refresh_token, user: mapUser(data.user) };
 }
 
 export async function fetchMe(): Promise<AppUser> {
   const data = await request<any>("/auth/me");
   return mapUser(data);
+}
+
+/** Revokes the current refresh session server-side. Best-effort — the
+ * caller (auth.tsx's signOut) clears local state regardless of whether
+ * this succeeds, since the point of logging out locally shouldn't hinge
+ * on network availability. Note this does NOT invalidate the current
+ * access token, which stays valid (stateless JWT) until it naturally
+ * expires — see the README's Authentication section. */
+export async function logoutRequest(refreshToken: string): Promise<void> {
+  try {
+    await request<void>("/auth/logout", {
+      method: "POST",
+      body: JSON.stringify({ refresh_token: refreshToken }),
+      auth: false,
+      skipRefresh: true,
+    });
+  } catch {
+    // Best-effort — see doc comment above.
+  }
 }
 
 // --- reports ---
@@ -225,12 +314,22 @@ export async function getReports(filters: ReportFilters = {}): Promise<Pothole[]
   if (filters.council) params.set("council", filters.council);
   params.set("confirmed_only", String(filters.confirmedOnly ?? true));
 
-  const data = await request<any[]>(`/reports?${params.toString()}`, { auth: false });
+  // Auth is optional here (the public map calls this with no one signed
+  // in), but NOT forced off: the backend requires a government-role
+  // token when confirmedOnly is false (the admin Reports/review-queue
+  // view), so if we're signed in, the token needs to go along. Leaving
+  // this as the default (attach token if present) covers both cases —
+  // anonymous public requests simply have no stored token to attach.
+  const data = await request<any[]>(`/reports?${params.toString()}`);
   return data.map(mapReport);
 }
 
 export async function getReport(id: string): Promise<Pothole> {
-  const data = await request<any>(`/reports/${id}`, { auth: false });
+  // Same reasoning as getReports: an unconfirmed report's detail page is
+  // government-only server-side, so the token needs to be sent if we
+  // have one; a signed-out visitor still gets the anonymous, tokenless
+  // request the public map relies on.
+  const data = await request<any>(`/reports/${id}`);
   return mapReport(data);
 }
 
