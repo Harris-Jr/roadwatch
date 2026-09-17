@@ -27,14 +27,17 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 
 from app.config import settings
 
-# Rounds is read at import time from settings; if you need to change
-# BCRYPT_ROUNDS at runtime (e.g. in tests) construct a fresh CryptContext
-# rather than mutating this one.
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=settings.bcrypt_rounds)
+# Rounds is read at import time from settings. Using the `bcrypt` library
+# directly rather than passlib's CryptContext wrapper: passlib 1.7.4 (its
+# last release, 2020) reads an internal `bcrypt.__about__.__version__`
+# attribute at import time to detect the backend version, which newer
+# `bcrypt` releases (4.1+) removed — a well-known passlib/bcrypt
+# compatibility break with no passlib-side fix coming. Calling bcrypt
+# directly sidesteps that version-sniffing path entirely.
 
 ACCESS_TOKEN_TYPE = "access"
 REFRESH_TOKEN_TYPE = "refresh"
@@ -51,14 +54,23 @@ class TokenError(Exception):
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    # bcrypt's algorithm only uses the first 72 bytes of the input and
+    # raises on longer input in recent versions rather than silently
+    # truncating (passlib used to truncate silently) -- truncate
+    # ourselves so an unusually long (but otherwise valid) password
+    # doesn't 500 instead of hashing.
+    pw_bytes = password.encode("utf-8")[:72]
+    hashed = bcrypt.hashpw(pw_bytes, bcrypt.gensalt(rounds=settings.bcrypt_rounds))
+    return hashed.decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """passlib's bcrypt backend compares in constant time internally."""
+    """bcrypt.checkpw compares in constant time internally."""
     try:
-        return pwd_context.verify(plain_password, hashed_password)
-    except ValueError:
+        return bcrypt.checkpw(
+            plain_password.encode("utf-8")[:72], hashed_password.encode("utf-8")
+        )
+    except (ValueError, TypeError):
         # Malformed/legacy hash in the DB — treat as a failed verification,
         # not a 500.
         return False
